@@ -19,7 +19,7 @@ from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import String
+from sqlalchemy import create_engine, String
 from sqlalchemy.engine import make_url
 from sqlalchemy_utils.types.encrypted.encrypted_type import AesEngine, AesGcmEngine
 
@@ -368,6 +368,29 @@ def test_key_rotation_for_aes_gcm_column() -> None:
     assert stats == ReEncryptStats(re_encrypted=1)
     new_value = conn.execute.call_args.args[1]["password"]
     assert gcm_column.process_result_value(new_value, DIALECT) == "hunter2"
+
+
+def test_select_columns_quotes_identifiers_needing_quoting() -> None:
+    """The SELECT builder quotes table/column identifiers via the dialect.
+
+    A table or column whose name is mixed-case or a reserved word ("select")
+    produces invalid or mis-scoped SQL under raw f-string interpolation. The
+    dialect identifier preparer must quote them so the statement executes.
+    """
+    engine = create_engine("sqlite://")
+    with engine.begin() as conn:
+        conn.exec_driver_sql('CREATE TABLE "MixedCase" ("Id" INTEGER, "select" TEXT)')
+        conn.exec_driver_sql(
+            'INSERT INTO "MixedCase" ("Id", "select") VALUES (1, \'secret\')'
+        )
+
+    with engine.connect() as conn:
+        result = SecretsMigrator._select_columns_from_table(  # noqa: SLF001
+            conn, ["Id"], ["select"], "MixedCase"
+        )
+        rows = result.fetchall()
+
+    assert rows == [(1, "secret")]
 
 
 def test_engine_migration_unreadable_value_counts_as_failure() -> None:
