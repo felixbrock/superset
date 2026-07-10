@@ -16,12 +16,15 @@
 # under the License.
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import pickle
 from abc import ABC, abstractmethod
 from typing import Any, TypedDict, Union
 from uuid import UUID
 
+from flask import current_app
 from marshmallow import Schema, ValidationError
 
 from superset.key_value.exceptions import (
@@ -81,11 +84,51 @@ class JsonKeyValueCodec(KeyValueCodec):
 
 
 class PickleKeyValueCodec(KeyValueCodec):
+    """
+    Codec that serializes values with ``pickle``.
+
+    Because ``pickle.loads`` executes arbitrary code while deserializing, the
+    pickled payload is authenticated with an HMAC-SHA256 signature derived from
+    the application's ``SECRET_KEY``. The signature is verified before the
+    payload is unpickled, so bytes that were not produced by this deployment
+    (e.g. a tampered or shared cache backend) are rejected with a
+    ``KeyValueCodecDecodeException`` instead of being deserialized. This makes
+    the codec safe to retain for values that JSON cannot represent (sets,
+    tuples, ``complex``, ...) without exposing an arbitrary code execution sink.
+    """
+
+    # Prefix identifying the signed payload layout, allowing the format to be
+    # evolved in the future without ambiguity.
+    _SIGNATURE_PREFIX = b"pkl1:"
+    _DIGEST_SIZE = hashlib.sha256().digest_size
+
+    def __init__(self, secret_key: str | bytes | None = None) -> None:
+        self._secret_key = secret_key
+
+    def _get_key(self) -> bytes:
+        secret_key = self._secret_key
+        if secret_key is None:
+            secret_key = current_app.config["SECRET_KEY"]
+        if isinstance(secret_key, str):
+            return secret_key.encode("utf-8")
+        return bytes(secret_key)
+
+    def _sign(self, payload: bytes) -> bytes:
+        return hmac.new(self._get_key(), payload, hashlib.sha256).digest()
+
     def encode(self, value: dict[Any, Any]) -> bytes:
-        return pickle.dumps(value)
+        payload = pickle.dumps(value)
+        return self._SIGNATURE_PREFIX + self._sign(payload) + payload
 
     def decode(self, value: bytes) -> dict[Any, Any]:
-        return pickle.loads(value)  # noqa: S301
+        prefix_len = len(self._SIGNATURE_PREFIX)
+        if not value.startswith(self._SIGNATURE_PREFIX):
+            raise KeyValueCodecDecodeException("Missing payload signature")
+        signature = value[prefix_len : prefix_len + self._DIGEST_SIZE]
+        payload = value[prefix_len + self._DIGEST_SIZE :]
+        if not hmac.compare_digest(signature, self._sign(payload)):
+            raise KeyValueCodecDecodeException("Invalid payload signature")
+        return pickle.loads(payload)  # noqa: S301
 
 
 class MarshmallowKeyValueCodec(JsonKeyValueCodec):
