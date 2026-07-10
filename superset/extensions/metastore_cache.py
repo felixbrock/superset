@@ -24,7 +24,10 @@ from flask_caching import BaseCache
 from sqlalchemy.exc import SQLAlchemyError
 
 from superset import db
-from superset.key_value.exceptions import KeyValueCreateFailedError
+from superset.key_value.exceptions import (
+    KeyValueCodecDecodeException,
+    KeyValueCreateFailedError,
+)
 from superset.key_value.types import (
     KeyValueCodec,
     KeyValueResource,
@@ -114,7 +117,14 @@ class SupersetMetastoreCache(BaseCache):
         # pylint: disable=import-outside-toplevel
         from superset.daos.key_value import KeyValueDAO
 
-        return KeyValueDAO.get_value(RESOURCE, self.get_key(key), self.codec)
+        try:
+            return KeyValueDAO.get_value(RESOURCE, self.get_key(key), self.codec)
+        except KeyValueCodecDecodeException:
+            # An entry that cannot be decoded (e.g. written with a different
+            # codec or, for the signed pickle codec, lacking a valid signature)
+            # is treated as a cache miss so the value is regenerated rather than
+            # surfacing an error to the caller.
+            return None
 
     def has(self, key: str) -> bool:
         entry = self.get(key)
