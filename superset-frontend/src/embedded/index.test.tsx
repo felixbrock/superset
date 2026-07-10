@@ -63,4 +63,17 @@ describe('embedded/index.tsx', () => {
 
     expect(setupAGGridModules).toHaveBeenCalled();
   });
+
+  test('renders failure messages as text', () => {
+    const { showFailureMessage } =
+      jest.requireActual<typeof import('./index')>('./index');
+    const message = '<img src=x onerror="window.__xss=1">';
+
+    showFailureMessage(message);
+
+    const appMountPoint = document.getElementById('app');
+    expect(appMountPoint?.textContent).toBe(message);
+    expect(appMountPoint?.querySelector('img')).toBeNull();
+    expect((window as Window & { __xss?: number }).__xss).toBeUndefined();
+  });
 });
