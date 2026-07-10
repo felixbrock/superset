@@ -20,6 +20,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
+import pytest
 import yaml
 
 
@@ -151,6 +152,30 @@ def test_load_contents_replaces_sqlalchemy_examples_uri_placeholder():
         assert "databases/examples.yaml" in contents
         assert test_uri in contents["databases/examples.yaml"]
         assert "__SQLALCHEMY_EXAMPLES_URI__" not in contents["databases/examples.yaml"]
+
+
+@patch("superset.examples.utils.ImportExamplesCommand")
+def test_load_configs_from_directory_rejects_python_object_tags(mock_command_cls):
+    """load_configs_from_directory() must not deserialize arbitrary Python objects.
+
+    A malicious metadata.yaml containing a language-specific tag such as
+    ``!!python/object/apply:os.system`` must not be constructed (which could
+    lead to arbitrary code execution, CWE-502). With the safe loader, parsing
+    such a document raises a YAML constructor error; the command is never run.
+    This test fails on the unsafe ``yaml.Loader`` and passes with ``safe_load``.
+    """
+    from superset.examples.utils import load_configs_from_directory
+
+    with TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "metadata.yaml").write_text("!!python/object/apply:os.getcwd []\n")
+
+        with pytest.raises(yaml.constructor.ConstructorError):
+            load_configs_from_directory(root)
+
+        # The unsafe loader would have deserialized the object and proceeded to
+        # build/run the import command; the safe loader must short-circuit first.
+        mock_command_cls.assert_not_called()
 
 
 @patch("superset.examples.utils.ImportExamplesCommand")
