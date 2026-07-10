@@ -301,8 +301,10 @@ class SecretsMigrator:
         column_names: list[str],
         table_name: str,
     ) -> Row:
-        cols = ",".join(pk_columns + column_names)
-        return conn.execute(text(f"SELECT {cols} FROM {table_name}"))  # noqa: S608
+        preparer = conn.dialect.identifier_preparer
+        cols = ", ".join(preparer.quote(c) for c in pk_columns + column_names)
+        table = preparer.quote(table_name)
+        return conn.execute(text(f"SELECT {cols} FROM {table}"))  # noqa: S608
 
     def _target_type(self, encrypted_type: EncryptedType) -> EncryptedType:
         """The EncryptedType to re-encrypt a value *into*.
