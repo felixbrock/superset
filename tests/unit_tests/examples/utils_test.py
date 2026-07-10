@@ -20,6 +20,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
+import pytest
 import yaml
 
 
@@ -204,3 +205,25 @@ def test_load_examples_from_configs_defaults(
         force_data=False,
     )
     mock_command.run.assert_called_once()
+
+
+@patch("superset.examples.utils.ImportExamplesCommand")
+def test_load_configs_from_directory_rejects_python_object_tags(mock_command_cls):
+    """A metadata.yaml containing a Python object tag must not be instantiated.
+
+    Using the full ``yaml.Loader`` allows constructing arbitrary Python objects
+    (CWE-502), so ``load_configs_from_directory`` must parse metadata with the
+    safe loader and raise a constructor error instead.
+    """
+    from superset.examples.utils import load_configs_from_directory
+
+    with TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "metadata.yaml").write_text(
+            "type: !!python/object/apply:os.getcwd []\n"
+        )
+
+        with pytest.raises(yaml.constructor.ConstructorError):
+            load_configs_from_directory(root)
+
+        mock_command_cls.assert_not_called()
