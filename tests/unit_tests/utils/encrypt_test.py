@@ -19,7 +19,7 @@ from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import String
+from sqlalchemy import create_engine, String, text
 from sqlalchemy.engine import make_url
 from sqlalchemy_utils.types.encrypted.encrypted_type import AesEngine, AesGcmEngine
 
@@ -368,6 +368,89 @@ def test_key_rotation_for_aes_gcm_column() -> None:
     assert stats == ReEncryptStats(re_encrypted=1)
     new_value = conn.execute.call_args.args[1]["password"]
     assert gcm_column.process_result_value(new_value, DIALECT) == "hunter2"
+
+
+# A table and column whose names are SQL reserved words / mixed-case, so they
+# only produce valid SQL when quoted as identifiers. The unquoted f-string
+# ``SELECT id,select FROM Group`` is a syntax error; the quoted form succeeds.
+_RESERVED_TABLE = "Group"
+_RESERVED_PK = "id"
+_RESERVED_COL = "select"
+
+
+def test_select_columns_quotes_identifiers() -> None:
+    """The SELECT builder quotes table/column identifiers as SQL identifiers.
+
+    Table/column names that are reserved words or mixed-case only yield valid
+    SQL when quoted. The previous raw f-string produced a syntax error for such
+    names; quoting via the dialect preparer makes the statement execute.
+    """
+    engine = create_engine("sqlite://")
+    preparer = engine.dialect.identifier_preparer
+    table = preparer.quote(_RESERVED_TABLE)
+    pk = preparer.quote(_RESERVED_PK)
+    col = preparer.quote(_RESERVED_COL)
+    with engine.begin() as conn:
+        conn.execute(
+            text(f"CREATE TABLE {table} ({pk} INTEGER, {col} TEXT)")  # noqa: S608
+        )
+        conn.execute(
+            text(
+                f"INSERT INTO {table} ({pk}, {col}) VALUES (1, 'hunter2')"  # noqa: S608
+            )
+        )
+        result = SecretsMigrator._select_columns_from_table(  # noqa: SLF001
+            conn, [_RESERVED_PK], [_RESERVED_COL], _RESERVED_TABLE
+        )
+        rows = result.fetchall()
+    assert rows == [(1, "hunter2")]
+
+
+def test_re_encrypt_row_update_quotes_identifiers() -> None:
+    """The UPDATE builder also quotes identifiers, so reserved/mixed-case
+    table and column names are re-encrypted correctly end-to-end.
+
+    Uses a real SQLite connection: an AES-CBC value stored in a reserved-word
+    column of a reserved-word table is migrated to AES-GCM, and the row is
+    located and updated via the quoted UPDATE statement.
+    """
+    cbc = _encrypted_type(AesEngine)
+    ciphertext = cbc.process_bind_param("hunter2", DIALECT)
+
+    engine = create_engine("sqlite://")
+    preparer = engine.dialect.identifier_preparer
+    table = preparer.quote(_RESERVED_TABLE)
+    pk = preparer.quote(_RESERVED_PK)
+    col = preparer.quote(_RESERVED_COL)
+
+    migrator = _engine_migrator(AesGcmEngine)
+    migrator._dialect = engine.dialect  # noqa: SLF001
+    stats = ReEncryptStats()
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(f"CREATE TABLE {table} ({pk} INTEGER, {col} BLOB)")  # noqa: S608
+        )
+        conn.execute(
+            text(f"INSERT INTO {table} ({pk}, {col}) VALUES (1, :val)"),  # noqa: S608
+            {"val": ciphertext},
+        )
+        row = SecretsMigrator._select_columns_from_table(  # noqa: SLF001
+            conn, [_RESERVED_PK], [_RESERVED_COL], _RESERVED_TABLE
+        ).fetchone()
+
+        migrator._re_encrypt_row(  # noqa: SLF001
+            conn, row, _RESERVED_TABLE, {_RESERVED_COL: cbc}, [_RESERVED_PK], stats
+        )
+
+        new_value = conn.execute(
+            text(f"SELECT {col} FROM {table} WHERE {pk} = 1")  # noqa: S608
+        ).scalar_one()
+
+    assert stats == ReEncryptStats(re_encrypted=1)
+    new_bytes = SecretsMigrator._read_bytes(_RESERVED_COL, new_value)  # noqa: SLF001
+    gcm = _encrypted_type(AesGcmEngine)
+    assert gcm.process_result_value(new_bytes, engine.dialect) == "hunter2"
 
 
 def test_engine_migration_unreadable_value_counts_as_failure() -> None:

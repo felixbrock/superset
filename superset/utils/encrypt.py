@@ -301,8 +301,10 @@ class SecretsMigrator:
         column_names: list[str],
         table_name: str,
     ) -> Row:
-        cols = ",".join(pk_columns + column_names)
-        return conn.execute(text(f"SELECT {cols} FROM {table_name}"))  # noqa: S608
+        preparer = conn.dialect.identifier_preparer
+        cols = ", ".join(preparer.quote(c) for c in pk_columns + column_names)
+        table = preparer.quote(table_name)
+        return conn.execute(text(f"SELECT {cols} FROM {table}"))  # noqa: S608
 
     def _target_type(self, encrypted_type: EncryptedType) -> EncryptedType:
         """The EncryptedType to re-encrypt a value *into*.
@@ -506,12 +508,18 @@ class SecretsMigrator:
         if not re_encrypted_columns:
             return
 
-        set_cols = ",".join(f"{name} = :{name}" for name in re_encrypted_columns)
-        where_clause = " AND ".join(f"{pk} = :_pk_{pk}" for pk in pk_columns)
+        preparer = conn.dialect.identifier_preparer
+        set_cols = ", ".join(
+            f"{preparer.quote(name)} = :{name}" for name in re_encrypted_columns
+        )
+        where_clause = " AND ".join(
+            f"{preparer.quote(pk)} = :_pk_{pk}" for pk in pk_columns
+        )
         pk_bind = {f"_pk_{pk}": row._mapping[pk] for pk in pk_columns}
+        table = preparer.quote(table_name)
         conn.execute(
             text(
-                f"UPDATE {table_name} SET {set_cols} WHERE {where_clause}"  # noqa: S608
+                f"UPDATE {table} SET {set_cols} WHERE {where_clause}"  # noqa: S608
             ),
             {**pk_bind, **re_encrypted_columns},
         )
