@@ -20,6 +20,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
+import pytest
 import yaml
 
 
@@ -151,6 +152,56 @@ def test_load_contents_replaces_sqlalchemy_examples_uri_placeholder():
         assert "databases/examples.yaml" in contents
         assert test_uri in contents["databases/examples.yaml"]
         assert "__SQLALCHEMY_EXAMPLES_URI__" not in contents["databases/examples.yaml"]
+
+
+@patch("superset.examples.utils.ImportExamplesCommand")
+def test_load_configs_from_directory_rejects_unsafe_yaml(mock_command_cls):
+    """Metadata YAML must be parsed with the safe loader.
+
+    A malicious metadata.yaml can embed language-specific tags such as
+    ``!!python/object/apply:os.system`` which the full ``yaml.Loader`` would
+    resolve, instantiating arbitrary Python objects (CWE-502). The safe loader
+    only produces standard scalar/list/dict types and raises a
+    ``ConstructorError`` for such tags, so no object is ever constructed and the
+    import command is never reached.
+    """
+    from superset.examples.utils import load_configs_from_directory
+
+    with TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "metadata.yaml").write_text(
+            "version: '1.0.0'\n"
+            "type: Database\n"
+            "payload: !!python/object/apply:os.getcwd []\n"
+        )
+
+        with pytest.raises(yaml.constructor.ConstructorError):
+            load_configs_from_directory(root)
+
+    mock_command_cls.assert_not_called()
+
+
+@patch("superset.examples.utils.ImportExamplesCommand")
+def test_load_configs_from_directory_parses_safe_metadata(mock_command_cls):
+    """A plain metadata mapping loads fine and has its ``type`` key stripped."""
+    from superset.commands.importers.v1.utils import METADATA_FILE_NAME
+    from superset.examples.utils import load_configs_from_directory
+
+    mock_command = MagicMock()
+    mock_command_cls.return_value = mock_command
+
+    with TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / METADATA_FILE_NAME).write_text("version: '1.0.0'\ntype: Database\n")
+
+        load_configs_from_directory(root)
+
+    assert mock_command_cls.call_count == 1
+    contents = mock_command_cls.call_args.args[0]
+    dumped_metadata = yaml.safe_load(contents[METADATA_FILE_NAME])
+    assert "type" not in dumped_metadata
+    assert dumped_metadata["version"] == "1.0.0"
+    mock_command.run.assert_called_once()
 
 
 @patch("superset.examples.utils.ImportExamplesCommand")
