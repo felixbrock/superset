@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+import pickle
 from contextlib import nullcontext
 from typing import Any
 
@@ -21,12 +22,26 @@ import pytest
 from marshmallow import Schema
 
 from superset.dashboards.permalink.schemas import DashboardPermalinkSchema
-from superset.key_value.exceptions import KeyValueCodecEncodeException
+from superset.key_value.exceptions import (
+    KeyValueCodecDecodeException,
+    KeyValueCodecEncodeException,
+)
 from superset.key_value.types import (
     JsonKeyValueCodec,
     MarshmallowKeyValueCodec,
     PickleKeyValueCodec,
 )
+
+_PICKLE_SIDE_EFFECT: list[bool] = []
+
+
+def _run_pickle_side_effect() -> None:
+    _PICKLE_SIDE_EFFECT.append(True)
+
+
+class _MaliciousPickleValue:
+    def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
+        return _run_pickle_side_effect, ()
 
 
 @pytest.mark.parametrize(
@@ -120,3 +135,21 @@ def test_pickle_codec(input_: Any, expected_result: Any):
     codec = PickleKeyValueCodec()
     encoded_value = codec.encode(input_)
     assert expected_result == codec.decode(encoded_value)
+
+
+def test_pickle_codec_rejects_unsigned_payload() -> None:
+    _PICKLE_SIDE_EFFECT.clear()
+
+    with pytest.raises(KeyValueCodecDecodeException):
+        PickleKeyValueCodec().decode(pickle.dumps(_MaliciousPickleValue()))
+
+    assert not _PICKLE_SIDE_EFFECT
+
+
+def test_pickle_codec_rejects_tampered_payload() -> None:
+    codec = PickleKeyValueCodec()
+    encoded_value = codec.encode({"foo": "bar"})
+    tampered_value = encoded_value[:-1] + bytes([encoded_value[-1] ^ 1])
+
+    with pytest.raises(KeyValueCodecDecodeException):
+        codec.decode(tampered_value)

@@ -16,12 +16,15 @@
 # under the License.
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import pickle
 from abc import ABC, abstractmethod
 from typing import Any, TypedDict, Union
 from uuid import UUID
 
+from flask import current_app
 from marshmallow import Schema, ValidationError
 
 from superset.key_value.exceptions import (
@@ -31,6 +34,19 @@ from superset.key_value.exceptions import (
 from superset.utils.backports import StrEnum
 
 Key = Union[int, UUID]
+
+_PICKLE_HMAC_SALT = b"superset.key_value.PickleKeyValueCodec"
+_PICKLE_SIGNATURE_SIZE = hashlib.sha256().digest_size
+
+
+def _get_pickle_hmac_key() -> bytes:
+    """Derive a dedicated pickle signing key from the application secret."""
+    secret_key = current_app.secret_key
+    if not secret_key:
+        raise RuntimeError("SECRET_KEY must be configured to use PickleKeyValueCodec")
+    if isinstance(secret_key, str):
+        secret_key = secret_key.encode()
+    return hmac.digest(secret_key, _PICKLE_HMAC_SALT, hashlib.sha256)
 
 
 class KeyValueFilter(TypedDict, total=False):
@@ -82,10 +98,21 @@ class JsonKeyValueCodec(KeyValueCodec):
 
 class PickleKeyValueCodec(KeyValueCodec):
     def encode(self, value: dict[Any, Any]) -> bytes:
-        return pickle.dumps(value)
+        payload = pickle.dumps(value)
+        signature = hmac.digest(_get_pickle_hmac_key(), payload, hashlib.sha256)
+        return signature + payload
 
     def decode(self, value: bytes) -> dict[Any, Any]:
-        return pickle.loads(value)  # noqa: S301
+        signature = value[:_PICKLE_SIGNATURE_SIZE]
+        payload = value[_PICKLE_SIGNATURE_SIZE:]
+        expected_signature = hmac.digest(
+            _get_pickle_hmac_key(), payload, hashlib.sha256
+        )
+        if len(signature) != _PICKLE_SIGNATURE_SIZE or not hmac.compare_digest(
+            signature, expected_signature
+        ):
+            raise KeyValueCodecDecodeException("Invalid pickle payload signature")
+        return pickle.loads(payload)  # noqa: S301
 
 
 class MarshmallowKeyValueCodec(JsonKeyValueCodec):
