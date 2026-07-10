@@ -24,6 +24,14 @@ assists people when migrating to a new version.
 
 ## Next
 
+### Pickle key-value payloads require a valid signature
+
+`PickleKeyValueCodec` signs new payloads with a key derived from `SECRET_KEY` and
+rejects unsigned or modified payloads before deserialization. Deployments that
+explicitly configured this codec must clear existing unsigned metastore cache
+entries after upgrading. Rotating `SECRET_KEY` also invalidates these entries.
+The default JSON-backed caches are unaffected.
+
 ### Owners, dashboard roles, and RLS roles replaced by Subjects
 
 Superset now uses subject-based access assignments for dashboards, charts, datasets,

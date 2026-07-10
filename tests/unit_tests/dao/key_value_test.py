@@ -17,7 +17,6 @@
 # pylint: disable=unused-argument, import-outside-toplevel, unused-import
 from __future__ import annotations
 
-import pickle
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -143,7 +142,7 @@ def test_create_pickle_entry(
         found_entry = (
             db.session.query(KeyValueEntry).filter_by(id=created_entry.id).one()
         )
-        assert isinstance(pickle.loads(found_entry.value), type(PICKLE_VALUE))  # noqa: S301
+        assert isinstance(PICKLE_CODEC.decode(found_entry.value), type(PICKLE_VALUE))
         assert found_entry.created_by_fk == admin_user.id
 
 
