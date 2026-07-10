@@ -146,8 +146,8 @@ const EmbeddedApp = () => (
 
 const appMountPoint = document.getElementById('app')!;
 
-function showFailureMessage(message: string) {
-  appMountPoint.innerHTML = message;
+export function showFailureMessage(message: string) {
+  appMountPoint.textContent = message;
 }
 
 if (!window.parent || window.parent === window) {

@@ -63,4 +63,17 @@ describe('embedded/index.tsx', () => {
 
     expect(setupAGGridModules).toHaveBeenCalled();
   });
+
+  test('showFailureMessage renders its argument as text, not HTML', () => {
+    const { showFailureMessage } = require('./index');
+    const appMountPoint = document.getElementById('app')!;
+
+    showFailureMessage('<img src=x onerror="window.__xss=1">');
+
+    expect(appMountPoint.querySelector('img')).toBeNull();
+    expect((window as unknown as { __xss?: number }).__xss).toBeUndefined();
+    expect(appMountPoint.textContent).toBe(
+      '<img src=x onerror="window.__xss=1">',
+    );
+  });
 });
