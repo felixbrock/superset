@@ -19,7 +19,7 @@ from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import String
+from sqlalchemy import create_engine, String, text
 from sqlalchemy.engine import make_url
 from sqlalchemy_utils.types.encrypted.encrypted_type import AesEngine, AesGcmEngine
 
@@ -368,6 +368,64 @@ def test_key_rotation_for_aes_gcm_column() -> None:
     assert stats == ReEncryptStats(re_encrypted=1)
     new_value = conn.execute.call_args.args[1]["password"]
     assert gcm_column.process_result_value(new_value, DIALECT) == "hunter2"
+
+
+def test_select_columns_quotes_reserved_and_mixed_case_identifiers() -> None:
+    """The SELECT is built with dialect-quoted identifiers, not raw f-strings.
+
+    A reserved-word table name and a column name containing a space are only
+    valid SQL when quoted. The previous ``SELECT {cols} FROM {table_name}``
+    f-string emitted ``SELECT ... FROM select`` and would raise a syntax error;
+    quoting via the dialect preparer makes the statement execute correctly.
+    """
+    engine = create_engine("sqlite://")
+    with engine.begin() as conn:
+        conn.execute(text('CREATE TABLE "select" ("order" INTEGER, "my secret" TEXT)'))
+        conn.execute(
+            text('INSERT INTO "select" ("order", "my secret") VALUES (1, \'hunter2\')')
+        )
+
+        result = SecretsMigrator._select_columns_from_table(  # noqa: SLF001
+            conn, ["order"], ["my secret"], "select"
+        )
+        rows = list(result)
+
+    assert rows == [(1, "hunter2")]
+
+
+def test_re_encrypt_row_quotes_identifiers_in_update() -> None:
+    """The UPDATE is built with dialect-quoted identifiers, not raw f-strings.
+
+    Uses a reserved-word table name and column so the unquoted
+    ``UPDATE {table_name} SET {name} = ...`` f-string would be invalid SQL. The
+    re-encrypted value must be written back and decrypt to the original
+    plaintext.
+    """
+    cbc = _encrypted_type(AesEngine)
+    ciphertext = cbc.process_bind_param("hunter2", DIALECT)
+
+    engine = create_engine("sqlite://")
+    with engine.begin() as conn:
+        conn.execute(text('CREATE TABLE "order" (id INTEGER, "select" BLOB)'))
+        conn.execute(
+            text('INSERT INTO "order" (id, "select") VALUES (:id, :val)'),
+            {"id": 1, "val": ciphertext},
+        )
+
+        migrator = _engine_migrator(AesGcmEngine)
+        row = _Row({"id": 1, "select": ciphertext})
+        stats = ReEncryptStats()
+
+        migrator._re_encrypt_row(  # noqa: SLF001
+            conn, row, "order", {"select": cbc}, ["id"], stats
+        )
+
+        assert stats == ReEncryptStats(re_encrypted=1)
+        stored = conn.execute(text('SELECT "select" FROM "order"')).scalar()
+
+    assert _encrypted_type(AesGcmEngine).process_result_value(stored, DIALECT) == (
+        "hunter2"
+    )
 
 
 def test_engine_migration_unreadable_value_counts_as_failure() -> None:
